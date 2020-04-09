@@ -1,14 +1,8 @@
-import socket
-import sys
-import logging
-import threading
-import time
-import string
-import os
-import random
-import _thread
-from checksum import Checksum
+import socket, sys, logging, threading, time, string, os, random, _thread
 from packet import Packet
+from checksum import Checksum
+
+
 
 class Util:
     @staticmethod
