@@ -1,7 +1,52 @@
-import socket, sys, logging, threading, time, string, os, random, _thread
-from packet import Packet
-from checksum import Checksum
+import socket, sys, logging, threading, time, string, os, random, _thread, pickle
 
+class Packet:
+    def __init__(self, data = None, checksum = None, seq_num = None, last_pkt = None):
+        self.data = data
+        self.checksum = checksum
+        self.seq_num = seq_num
+        self.last_pkt = last_pkt
+        
+        self.serialized_form = None
+        
+    def getSerializedPacket(self):
+        if(not self.serialized_form):
+            self.serialized_form = pickle.dumps({'seq_num': self.seq_num, 'checksum': self.checksum, 'data': self.data, 'last_pkt': self.last_pkt})
+        return self.serialized_form
+
+    def deserializePacket(self, packet):
+        deserialized_form = pickle.loads(packet)
+        self.data = deserialized_form['data']
+        self.checksum = deserialized_form['checksum']
+        self.seq_num = deserialized_form['seq_num']
+        self.last_pkt = deserialized_form['last_pkt']
+
+class Checksum:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def compute(data):
+        chk_sum = 0
+        for i in range(0, len(data), 2):
+            if (i+1) < len(data):
+                pos_1 = ord(data[i])
+                pos_2 = ord(data[i+1])
+                chk_sum = chk_sum + (pos_1+(pos_2 << 8))
+            elif (i+1)==len(data):
+                chk_sum += ord(data[i])
+            else:
+                raise "Error at CS compute"
+        chk_sum = chk_sum + (chk_sum >> 16)
+        chk_sum = ~chk_sum & 0xffff
+        return chk_sum
+
+    @classmethod
+    def verify(cls, data, chk):
+        if(cls.compute(data) == chk):
+            return True
+        else:
+            return False
 
 
 class Util:
@@ -11,28 +56,28 @@ class Util:
         return ''.join(random.choice(letters) for i in range(stringLength))
 
 class GBN:
-    def __init__(self, window_size, sequence_bits, segment_size, timeout_period, num_of_packets, port_no):
+    def __init__(self, window_size, sequence_bits, segment_size, timeout_period, num_of_packets, port_num):
         self.window_size = window_size
         self.sequence_bits = sequence_bits
         self.sequence_max = 2 ** self.sequence_bits
         self.send_base = 1
         self.segment_size = segment_size
         self.timeout_period = timeout_period
-        self.num_of_packets = num_of_packets + 1 # number_of_segments
+        self.num_of_packets = num_of_packets + 1 
         self.inorder_ack = 1
         self.timer = False
-        self.udp_helper = UDPHelper(port_no)
+        self.udp_helper = UDP(port_num)
         self.terminated = False
         self.once = True
         self.queue = [None]
-        self.mutex = _thread.allocate_lock() # slide window mutex
-        self.main_mutex = _thread.allocate_lock() # slide window mutex
-        self.checksumECount = int(num_of_packets*0.1)
-        self.lostAckECount = int(0.05*num_of_packets)
-        self.checkEPackets = [ random.randint(1,num_of_packets) for i in range(self.checksumECount)]
-        self.lostAckEPackets = [ random.randint(1,num_of_packets) for i in range(self.lostAckECount)]
-        print("checkEPackts: ", self.checkEPackets)
-        print("lostAckEPackets: ", self.lostAckEPackets)
+        self.mutex = _thread.allocate_lock() 
+        self.main_mutex = _thread.allocate_lock() 
+        self.checksum_count = int(num_of_packets*0.1)
+        self.lost_ack_count = int(0.05*num_of_packets)
+        self.check_packets = [ random.randint(1,num_of_packets) for i in range(self.checksum_count)]
+        self.lost_ack_packets = [ random.randint(1,num_of_packets) for i in range(self.lost_ack_count)]
+        print("check_packets: ", self.check_packets)
+        print("lost_ack_packets: ", self.lost_ack_packets)
         for i in range(1, self.num_of_packets+1):
             self.queue.append({'num': i, 'data': None, 'status': 'not_sent', 'timer': None})
 
@@ -67,7 +112,7 @@ class GBN:
     
     def process_queue(self):
         self.mutex.acquire()
-        sb_status = self.queue[self.send_base]['status'] #sendbase status
+        sb_status = self.queue[self.send_base]['status'] 
         if(sb_status == "not_sent" or sb_status == "timeout"):
             for i in range(self.send_base, min(self.send_base + self.window_size + 1, self.num_of_packets)):
                 self.queue[i]['status'] = 'sent'
@@ -81,9 +126,9 @@ class GBN:
         inorder_ack = self.inorder_ack
 
         if(ack):
-            if(ack in self.lostAckEPackets):
+            if(ack in self.lost_ack_packets):
                 self.main_mutex.release()
-                self.lostAckEPackets.pop(self.lostAckEPackets.index(ack))
+                self.lost_ack_packets.pop(self.lost_ack_packets.index(ack))
                 print("Simulating ack loss for ack no: ", ack)
                 return
                 
@@ -116,16 +161,16 @@ class GBN:
         print("Sending ", self.get_next_seq_num(seq_num), "; Timer started")
         if(not self.queue[seq_num]['data']): self.queue[seq_num]['data'] = Util.randomString(self.segment_size)
         checksum = Checksum.compute(self.queue[seq_num]['data'])
-        if(seq_num in self.checkEPackets):
+        if(seq_num in self.check_packets):
             checksum = "avalakipavalaki"
-            self.checkEPackets.pop(self.checkEPackets.index(seq_num))
+            self.check_packets.pop(self.check_packets.index(seq_num))
             print("Simulating wrong checksum for packet: ", seq_num)
         packet = Packet(self.queue[seq_num]['data'], checksum, seq_num, False)
         self.udp_helper.send(packet.getSerializedPacket(), self)
 
 
 class SR:
-    def __init__(self, window_size, sequence_bits, segment_size, timeout_period, num_of_packets, port_no):
+    def __init__(self, window_size, sequence_bits, segment_size, timeout_period, num_of_packets, port_num):
         self.window_size = window_size
         self.sequence_bits = sequence_bits
         self.sequence_max = 2 ** self.sequence_bits
@@ -135,18 +180,18 @@ class SR:
         self.num_of_packets = num_of_packets + 1 # number_of_segments
         self.inorder_ack = 1
         self.timer = False
-        self.udp_helper = UDPHelper(port_no)
+        self.udp_helper = UDP(port_num)
         self.terminated = False
         self.once = True
         self.queue = [None]
         self.mutex = _thread.allocate_lock() # slide window mutex
         self.main_mutex = _thread.allocate_lock() # slide window mutex
-        self.checksumECount = int(num_of_packets*0.1)
-        self.lostAckECount = int(0.05*num_of_packets)
-        self.checkEPackets = [ random.randint(1,num_of_packets) for i in range(self.checksumECount)]
-        self.lostAckEPackets = [ random.randint(1,num_of_packets) for i in range(self.lostAckECount)]
-        print("checkEPackts: ", self.checkEPackets)
-        print("lostAckEPackets: ", self.lostAckEPackets)
+        self.checksum_count = int(num_of_packets*0.1)
+        self.lost_ack_count = int(0.05*num_of_packets)
+        self.check_packets = [ random.randint(1,num_of_packets) for i in range(self.checksum_count)]
+        self.lost_ack_packets = [ random.randint(1,num_of_packets) for i in range(self.lost_ack_count)]
+        print("checkEPackts: ", self.check_packets)
+        print("lost_ack_packets: ", self.lost_ack_packets)
         for i in range(1, self.num_of_packets+1):
             self.queue.append({'num': i, 'data': None, 'status': 'not_sent', 'timer': None})
 
@@ -198,9 +243,9 @@ class SR:
             self.done()
 
         if(ack):
-            if(ack in self.lostAckEPackets):
+            if(ack in self.lost_ack_packets):
                 self.main_mutex.release()
-                self.lostAckEPackets.pop(self.lostAckEPackets.index(ack))
+                self.lost_ack_packets.pop(self.lost_ack_packets.index(ack))
                 print("Simulating ack loss for ack no: ", ack)
                 return
 
@@ -225,7 +270,7 @@ class SR:
 
     def done(self):
         if(not self.terminated):
-            print("Done transmitting packets. Terminating.")
+            print("Packets Transmitted\n")
             self.terminated = True
             exit()
 
@@ -233,44 +278,44 @@ class SR:
         print("Sending ", self.get_next_seq_num(seq_num), "; Timer started")
         if(not self.queue[seq_num]['data']): self.queue[seq_num]['data'] = Util.randomString(self.segment_size)
         checksum = Checksum.compute(self.queue[seq_num]['data'])
-        if(seq_num in self.checkEPackets):
+        if(seq_num in self.check_packets):
             checksum = "avalakipavalaki"
-            self.checkEPackets.pop(self.checkEPackets.index(seq_num))
+            self.check_packets.pop(self.check_packets.index(seq_num))
             print("Simulating wrong checksum for packet: ", seq_num)
         packet = Packet(self.queue[seq_num]['data'], checksum, seq_num, False)
         self.udp_helper.send(packet.getSerializedPacket(), self)
 
-class UDPHelper:
-    def __init__(self, port_no):
-        self.ip_address = '127.0.0.1'
-        self.port_number = port_no
-        self.clientSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+class UDP:
+    def __init__(self, port_num):
+        self.ip_addr = '127.0.0.1'
+        self.port_num = port_num
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.receiver_running = False
         self.receiver = None
         self.parent = None
     
     def send(self, content, parent):
         self.parent = parent
-        self.clientSock.sendto(content, (self.ip_address, self.port_number))
+        self.client_socket.sendto(content, (self.ip_addr, self.port_num))
         if(not self.receiver_running):
             pass
-        self.startReceiver()
+        self.start_receiver()
         return
     
     def receive(self):
         while True:
             try:
-                ack_rec,_ = self.clientSock.recvfrom(1024)
+                ack_rec,_ = self.client_socket.recvfrom(1024)
                 if(ack_rec):
                     ack_rec = int(ack_rec.decode("utf-8"))
                     self.parent.next(ack_rec)
-                    break #remove this
+                    break
             except ConnectionResetError:
-                print("Receiver not found.")
+                print("ConnectionResetError")
                 os._exit(0)
         return
     
-    def startReceiver(self):
+    def start_receiver(self):
         self.receiver_running = True
         self.receiver = threading.Thread(target=self.receive, args=())
         self.receiver.start()
@@ -282,28 +327,30 @@ class UDPHelper:
 
 if __name__ == "__main__":
     if(len(sys.argv) is not 4):
-        print("Invalid number of arguments.")
-        print("Syntax: ")
-        print("Mysender inputfile portNum 1000")
+        print("*"*20)
+        print("Invalid Input! \n\n Mysender inputfile portNum 1000")
+        print("*"*20)
     else:
         try:
             file = open(sys.argv[1]).readlines()
+
             protocol = file[0].strip()
             sequence_bits = int(file[1].strip().split(' ')[0])
             window_size = int(file[1].strip().split(' ')[1])
+            
             timeout_period = float(file[2].strip())
             segment_size = int(file[3].strip())
-            port_no = int(sys.argv[2])
+            port_num = int(sys.argv[2])
 
             if(protocol == "GBN"):
-                gbn = GBN(window_size, sequence_bits, segment_size, timeout_period, int(sys.argv[3]), port_no)
+                gbn = GBN(window_size, sequence_bits, segment_size, timeout_period, int(sys.argv[3]), port_num)
                 gbn.start()
             elif(protocol == "SR"):
-                sr = SR(window_size, sequence_bits, segment_size, timeout_period, int(sys.argv[3]), port_no)
+                sr = SR(window_size, sequence_bits, segment_size, timeout_period, int(sys.argv[3]), port_num)
                 sr.start()
         
         except ConnectionResetError:
-            print("Receiver not found")
+            print("ConnectionResetError")
             os._exit(0)
 
         except Exception :

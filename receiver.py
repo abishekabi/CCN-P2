@@ -1,18 +1,58 @@
-import socket
-import sys
-import os
-import logging
-import threading
-import random
-import time
-import _thread
-from checksum import Checksum
-from packet import Packet
+import socket, sys, logging, threading, time, string, os, random, _thread, pickle
+
+
 
 logging.basicConfig(format=format, level=logging.INFO, datefmt="%H:%M:%S")
 
-UDP_IP_ADDRESS = "127.0.0.1"
-UDP_PORT_NO = 6789
+
+class Packet:
+    def __init__(self, data = None, checksum = None, seq_num = None, last_pkt = None):
+        self.data = data
+        self.checksum = checksum
+        self.seq_num = seq_num
+        self.last_pkt = last_pkt
+        
+        self.serialized_form = None
+        
+    def getSerializedPacket(self):
+        if(not self.serialized_form):
+            self.serialized_form = pickle.dumps({'seq_num': self.seq_num, 'checksum': self.checksum, 'data': self.data, 'last_pkt': self.last_pkt})
+        return self.serialized_form
+
+    def deserializePacket(self, packet):
+        deserialized_form = pickle.loads(packet)
+        self.data = deserialized_form['data']
+        self.checksum = deserialized_form['checksum']
+        self.seq_num = deserialized_form['seq_num']
+        self.last_pkt = deserialized_form['last_pkt']
+
+class Checksum:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def compute(data):
+        chk_sum = 0
+        for i in range(0, len(data), 2):
+            if (i+1) < len(data):
+                pos_1 = ord(data[i])
+                pos_2 = ord(data[i+1])
+                chk_sum = chk_sum + (pos_1+(pos_2 << 8))
+            elif (i+1)==len(data):
+                chk_sum += ord(data[i])
+            else:
+                raise "Error at CS compute"
+        chk_sum = chk_sum + (chk_sum >> 16)
+        chk_sum = ~chk_sum & 0xffff
+        return chk_sum
+
+    @classmethod
+    def verify(cls, data, chk):
+        if(cls.compute(data) == chk):
+            return True
+        else:
+            return False
+
 
 class GBN:
     def __init__(self, window_size, sequence_bits):
@@ -26,7 +66,7 @@ class GBN:
             self.expected_seq_number+=1
             return self.expected_seq_number, False
         else:
-            return self.expected_seq_number, True # to discard because the packet is either out of order or duplicate
+            return self.expected_seq_number, True 
 
 class SR:
     def __init__(self, window_size, sequence_bits):
@@ -36,7 +76,7 @@ class SR:
         self.sequence_max = 2 ** self.sequence_bits
         self.queue = {}
         self.next_seq_num = 1
-        self.mutex = _thread.allocate_lock() # slide window mutex
+        self.mutex = _thread.allocate_lock()
 
     def is_packet_inorder(self, seq_num):
         if seq_num in self.queue: return True
@@ -68,14 +108,14 @@ class SR:
             return packet.seq_num, False
         else:
             self.mutex.release()
-            return packet.seq_num, True # to discard because the packet is out of order
+            return packet.seq_num, True
 
-class UDPHelper:
+class UDP:
     def __init__(self, protocol_name, window_size, sequence_bits):
         self.ip_address = '127.0.0.1'
         self.port_number = 6789
         self.serverSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.serverSock.bind((UDP_IP_ADDRESS, UDP_PORT_NO))
+        self.serverSock.bind((ip_address, port_number))
         self.receiver_running = False
         self.receiver = None
         self.protocol = None
@@ -87,12 +127,9 @@ class UDPHelper:
             self.protocol = SR(window_size, sequence_bits)
             self.protocol.init_queue()
         else:
-            raise Exception('Invalid protocol name.')
+            raise Exception('Invalid protocol')
     
     def send(self, content):
-        # self.clientSock.sendto(content, (self.ip_address, self.port_number))
-        # if(not self.receiver_running):
-        #     self.startReceiver()
         return
     
     def simulatePacketLoss(self):
@@ -105,13 +142,12 @@ class UDPHelper:
             return True
         return False
     
-    def startListening(self):
+    def start_listen(self):
         while True:
             try:
                 data, addr = self.serverSock.recvfrom(1024)
                 packet = Packet()
                 packet.deserializePacket(data)
-                # print('addr: ', addr)
 
                 if(self.simulatePacketLoss()):
                     print("Simulating packet loss for packet with seq no: ", packet.seq_num)
@@ -123,7 +159,7 @@ class UDPHelper:
                         print("Discarding packet with sequence number " + str(packet.seq_num))
                     else:
                         print("Received Segment: ", str(packet.seq_num))
-                    _ = self.serverSock.sendto(str(ack_num).encode(), addr) #sending ack with ack_num
+                    _ = self.serverSock.sendto(str(ack_num).encode(), addr) 
                     print("ACK Sent: ", str(ack_num))
                 else:
                     print("Discarding packet with invalid checksum, packet no: ", packet.seq_num)
@@ -132,7 +168,7 @@ class UDPHelper:
                 print ('Interrupted')
                 os._exit(0)
             except ConnectionResetError:
-                pass # Do nothing.
+                pass
             except Exception:
                 raise Exception
         return
@@ -146,9 +182,9 @@ class UDPHelper:
 
 if __name__ == "__main__":
     if(len(sys.argv) is not 3):
-        print("Invalid number of arguments.")
-        print("Syntax: ")
-        print("Mysender inputfile portNum")
+        print("*"*20)
+        print("Invalid Input! \n\n Mysender inputfile portNum")
+        print("*"*20)
     else:
         try:
             UDP_PORT_NO = int(sys.argv[2])
@@ -160,11 +196,11 @@ if __name__ == "__main__":
             segment_size = int(file[3].strip())
 
             if(protocol == "GBN"):
-                udp_helper = UDPHelper('GBN', window_size, sequence_bits)
+                udp_helper = UDP('GBN', window_size, sequence_bits)
             elif(protocol == "SR"):
-                udp_helper = UDPHelper('SR', window_size, sequence_bits)
+                udp_helper = UDP('SR', window_size, sequence_bits)
             
-            udp_helper.startListening()
+            udp_helper.start_listen()
             
         except Exception :
             raise Exception
