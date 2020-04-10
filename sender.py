@@ -7,18 +7,20 @@ class Packet:
         self.sequence_number = sequence_number
         self.last_pkt = last_pkt
         self.serialized_form = None
-        
-    def getSerializedPacket(self):
-        if(not self.serialized_form):
-            self.serialized_form = pickle.dumps({'sequence_number': self.sequence_number, 'checksum': self.checksum, 'data': self.data, 'last_pkt': self.last_pkt})
-        return self.serialized_form
-
-    def deserializePacket(self, packet):
+    
+    def deserialize_packet(self, packet):
         deserialized_form = pickle.loads(packet)
         self.data = deserialized_form['data']
         self.checksum = deserialized_form['checksum']
         self.sequence_number = deserialized_form['sequence_number']
         self.last_pkt = deserialized_form['last_pkt']
+
+    def serialize_pkt(self):
+        if(not self.serialized_form):
+            self.serialized_form = pickle.dumps({'sequence_number': self.sequence_number, 'checksum': self.checksum, 'data': self.data, 'last_pkt': self.last_pkt})
+        return self.serialized_form
+
+    
 
 class Checksum:
     def __init__(self):
@@ -80,12 +82,12 @@ class GBN:
         for i in range(1, self.num_of_packets+1):
             self.queue.append({'num': i, 'data': None, 'status': 'not_sent', 'timer': None})
 
-    def get_next_sequence_number(self, curr_seq):
-        return curr_seq
-        curr_seq%=self.sequence_max
-        if(curr_seq == 0): curr_seq = self.sequence_max
-        return curr_seq
-    
+    def timeout_check(self, sequence_number):
+        if(self.queue[sequence_number]['status'] is not 'acked'):
+            self.queue[sequence_number]['status'] = 'timeout'
+            print("Resending Timedout Packet: ", self.get_next_sequence_number(sequence_number))
+        self.process_queue()
+
     def slide_window(self,):
         self.mutex.acquire()
         for i in range(self.send_base, min(self.send_base + self.window_size + 1, self.num_of_packets)):
@@ -93,22 +95,16 @@ class GBN:
                 self.send_base+=1
             else:
                 break
-
         self.mutex.release()
     
-    def timeout_check(self, sequence_number):
-        if(self.queue[sequence_number]['status'] is not 'acked'):
-            self.queue[sequence_number]['status'] = 'timeout'
-            print("Resending Timedout Packet: ", self.get_next_sequence_number(sequence_number))
-        self.process_queue()
 
-    def update_queue_ack(self, ack_rec):
-
-        for index, item in enumerate(self.queue):
-            if index == 0: continue
-            if index == ack_rec: return
-            item['status'] = "acked"
+    def get_next_sequence_number(self, curr_seq):
+        return curr_seq
+        curr_seq%=self.sequence_max
+        if(curr_seq == 0): curr_seq = self.sequence_max
+        return curr_seq
     
+
     def process_queue(self):
         self.mutex.acquire()
         sb_status = self.queue[self.send_base]['status'] 
@@ -119,7 +115,36 @@ class GBN:
                 self.queue[i]['timer'].start()
                 self.send_packet(i)
         self.mutex.release()
-        
+    
+
+    def update_queue_ack(self, ack_rec):
+
+        for index, item in enumerate(self.queue):
+            if index == 0: continue
+            if index == ack_rec: return
+            item['status'] = "acked"
+    
+    def start(self):
+        self.next()
+
+    def done(self):
+        if(not self.terminated):
+            print("Done transmitting packets !")
+            self.terminated = True
+            exit()
+
+    def send_packet(self, sequence_number):
+        print("Sending Packet #", self.get_next_sequence_number(sequence_number))
+        if(not self.queue[sequence_number]['data']): self.queue[sequence_number]['data'] = Randomize_utility.randomString(self.segment_size)
+        checksum = Checksum.compute(self.queue[sequence_number]['data'])
+        if(sequence_number in self.check_packets):
+            checksum = "myrandomchecksum"
+            self.check_packets.pop(self.check_packets.index(sequence_number))
+            print("Simulating invalid checksum for packet: ", sequence_number)
+        packet = Packet(self.queue[sequence_number]['data'], checksum, sequence_number, False)
+        self.udp_helper.send(packet.serialize_pkt(), self)
+
+    
     def next(self, ack = None, timer = None):
         self.main_mutex.acquire()
         inorder_ack = self.inorder_ack
@@ -147,25 +172,6 @@ class GBN:
         
         self.main_mutex.release()
     
-    def start(self):
-        self.next()
-
-    def done(self):
-        if(not self.terminated):
-            print("Done transmitting packets !")
-            self.terminated = True
-            exit()
-
-    def send_packet(self, sequence_number):
-        print("Sending ", self.get_next_sequence_number(sequence_number), "; Timer started")
-        if(not self.queue[sequence_number]['data']): self.queue[sequence_number]['data'] = Randomize_utility.randomString(self.segment_size)
-        checksum = Checksum.compute(self.queue[sequence_number]['data'])
-        if(sequence_number in self.check_packets):
-            checksum = "myrandomchecksum"
-            self.check_packets.pop(self.check_packets.index(sequence_number))
-            print("Simulating wrong checksum for packet: ", sequence_number)
-        packet = Packet(self.queue[sequence_number]['data'], checksum, sequence_number, False)
-        self.udp_helper.send(packet.getSerializedPacket(), self)
 
 
 class SR:
@@ -279,9 +285,9 @@ class SR:
         if(sequence_number in self.check_packets):
             checksum = "myrandomchecksum"
             self.check_packets.pop(self.check_packets.index(sequence_number))
-            print("Simulating wrong checksum for packet: ", sequence_number)
+            print("Simulating invalid checksum for packet: ", sequence_number)
         packet = Packet(self.queue[sequence_number]['data'], checksum, sequence_number, False)
-        self.udp_helper.send(packet.getSerializedPacket(), self)
+        self.udp_helper.send(packet.serialize_pkt(), self)
 
 class UDP:
     def __init__(self, port_num):
