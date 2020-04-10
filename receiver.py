@@ -115,7 +115,7 @@ class UDP:
         self.ip_address = '127.0.0.1'
         self.port_number = 6789
         self.serverSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.serverSock.bind((ip_address, port_number))
+        self.serverSock.bind((self.ip_address, self.port_number))
         self.receiver_running = False
         self.receiver = None
         self.protocol = None
