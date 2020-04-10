@@ -1,24 +1,23 @@
 import socket, sys, logging, threading, time, string, os, random, _thread, pickle
 
 class Packet:
-    def __init__(self, data = None, checksum = None, seq_num = None, last_pkt = None):
+    def __init__(self, data = None, checksum = None, sequence_number = None, last_pkt = None):
         self.data = data
         self.checksum = checksum
-        self.seq_num = seq_num
+        self.sequence_number = sequence_number
         self.last_pkt = last_pkt
-        
         self.serialized_form = None
         
     def getSerializedPacket(self):
         if(not self.serialized_form):
-            self.serialized_form = pickle.dumps({'seq_num': self.seq_num, 'checksum': self.checksum, 'data': self.data, 'last_pkt': self.last_pkt})
+            self.serialized_form = pickle.dumps({'sequence_number': self.sequence_number, 'checksum': self.checksum, 'data': self.data, 'last_pkt': self.last_pkt})
         return self.serialized_form
 
     def deserializePacket(self, packet):
         deserialized_form = pickle.loads(packet)
         self.data = deserialized_form['data']
         self.checksum = deserialized_form['checksum']
-        self.seq_num = deserialized_form['seq_num']
+        self.sequence_number = deserialized_form['sequence_number']
         self.last_pkt = deserialized_form['last_pkt']
 
 class Checksum:
@@ -49,7 +48,7 @@ class Checksum:
             return False
 
 
-class Util:
+class Randomize_utility:
     @staticmethod
     def randomString(stringLength=255):
         letters = string.ascii_lowercase
@@ -76,12 +75,12 @@ class GBN:
         self.lost_ack_count = int(0.05*num_of_packets)
         self.check_packets = [ random.randint(1,num_of_packets) for i in range(self.checksum_count)]
         self.lost_ack_packets = [ random.randint(1,num_of_packets) for i in range(self.lost_ack_count)]
-        print("check_packets: ", self.check_packets)
-        print("lost_ack_packets: ", self.lost_ack_packets)
+        print("Total Packets ----> ", self.check_packets)
+        print("Ack Packets Lost ---->", self.lost_ack_packets)
         for i in range(1, self.num_of_packets+1):
             self.queue.append({'num': i, 'data': None, 'status': 'not_sent', 'timer': None})
 
-    def get_next_seq_num(self, curr_seq):
+    def get_next_sequence_number(self, curr_seq):
         return curr_seq
         curr_seq%=self.sequence_max
         if(curr_seq == 0): curr_seq = self.sequence_max
@@ -97,10 +96,10 @@ class GBN:
 
         self.mutex.release()
     
-    def timeout_check(self, seq_num):
-        if(self.queue[seq_num]['status'] is not 'acked'):
-            self.queue[seq_num]['status'] = 'timeout'
-            print("Timedout segment: ", self.get_next_seq_num(seq_num), ", Resending")
+    def timeout_check(self, sequence_number):
+        if(self.queue[sequence_number]['status'] is not 'acked'):
+            self.queue[sequence_number]['status'] = 'timeout'
+            print("Resending Timedout Packet: ", self.get_next_sequence_number(sequence_number))
         self.process_queue()
 
     def update_queue_ack(self, ack_rec):
@@ -133,7 +132,7 @@ class GBN:
                 return
                 
             if(ack > inorder_ack):
-                print("Received ACK: ", self.get_next_seq_num(ack))
+                print("Received ACK: ", self.get_next_sequence_number(ack))
                 self.inorder_ack = ack
                 self.update_queue_ack(ack)
                 self.slide_window()
@@ -153,19 +152,19 @@ class GBN:
 
     def done(self):
         if(not self.terminated):
-            print("Done transmitting packets. Terminating.")
+            print("Done transmitting packets !")
             self.terminated = True
             exit()
 
-    def send_packet(self, seq_num):
-        print("Sending ", self.get_next_seq_num(seq_num), "; Timer started")
-        if(not self.queue[seq_num]['data']): self.queue[seq_num]['data'] = Util.randomString(self.segment_size)
-        checksum = Checksum.compute(self.queue[seq_num]['data'])
-        if(seq_num in self.check_packets):
-            checksum = "avalakipavalaki"
-            self.check_packets.pop(self.check_packets.index(seq_num))
-            print("Simulating wrong checksum for packet: ", seq_num)
-        packet = Packet(self.queue[seq_num]['data'], checksum, seq_num, False)
+    def send_packet(self, sequence_number):
+        print("Sending ", self.get_next_sequence_number(sequence_number), "; Timer started")
+        if(not self.queue[sequence_number]['data']): self.queue[sequence_number]['data'] = Randomize_utility.randomString(self.segment_size)
+        checksum = Checksum.compute(self.queue[sequence_number]['data'])
+        if(sequence_number in self.check_packets):
+            checksum = "myrandomchecksum"
+            self.check_packets.pop(self.check_packets.index(sequence_number))
+            print("Simulating wrong checksum for packet: ", sequence_number)
+        packet = Packet(self.queue[sequence_number]['data'], checksum, sequence_number, False)
         self.udp_helper.send(packet.getSerializedPacket(), self)
 
 
@@ -177,25 +176,25 @@ class SR:
         self.send_base = 1
         self.segment_size = segment_size
         self.timeout_period = timeout_period
-        self.num_of_packets = num_of_packets + 1 # number_of_segments
+        self.num_of_packets = num_of_packets + 1
         self.inorder_ack = 1
         self.timer = False
         self.udp_helper = UDP(port_num)
         self.terminated = False
         self.once = True
         self.queue = [None]
-        self.mutex = _thread.allocate_lock() # slide window mutex
-        self.main_mutex = _thread.allocate_lock() # slide window mutex
+        self.mutex = _thread.allocate_lock() 
+        self.main_mutex = _thread.allocate_lock()
         self.checksum_count = int(num_of_packets*0.1)
         self.lost_ack_count = int(0.05*num_of_packets)
         self.check_packets = [ random.randint(1,num_of_packets) for i in range(self.checksum_count)]
         self.lost_ack_packets = [ random.randint(1,num_of_packets) for i in range(self.lost_ack_count)]
-        print("checkEPackts: ", self.check_packets)
-        print("lost_ack_packets: ", self.lost_ack_packets)
+        print("Total Packets ----> ", self.check_packets)
+        print("Ack Packets Lost ---->", self.lost_ack_packets)
         for i in range(1, self.num_of_packets+1):
             self.queue.append({'num': i, 'data': None, 'status': 'not_sent', 'timer': None})
 
-    def get_next_seq_num(self, curr_seq):
+    def get_next_sequence_number(self, curr_seq):
         return curr_seq
         curr_seq%=self.sequence_max
         if(curr_seq == 0): curr_seq = self.sequence_max
@@ -204,7 +203,6 @@ class SR:
     def slide_window(self,):
         self.mutex.acquire()
         for i in range(self.send_base, min(self.send_base + self.window_size + 1, self.num_of_packets)):
-            # print('ha ha -> ', self.queue[i]['status'])
             if(self.queue[i]['status'] == 'acked'):
                 self.send_base+=1
             else:
@@ -212,11 +210,11 @@ class SR:
 
         self.mutex.release()
     
-    def timeout_check(self, seq_num):
+    def timeout_check(self, sequence_number):
         self.mutex.acquire()
-        if(self.queue[seq_num]['status'] is not 'acked'):
-            self.queue[seq_num]['status'] = 'timeout'
-            print("Timedout segment: ", self.get_next_seq_num(seq_num), ", Resending")
+        if(self.queue[sequence_number]['status'] is not 'acked'):
+            self.queue[sequence_number]['status'] = 'timeout'
+            print("Resending Timedout Packet: ", self.get_next_sequence_number(sequence_number))
         self.mutex.release()
         self.process_queue()
 
@@ -239,7 +237,7 @@ class SR:
     def next(self, ack = None, timer = None):
         self.main_mutex.acquire()
         inorder_ack = self.inorder_ack
-        if(inorder_ack >= self.num_of_packets+1): #check if transmission is done
+        if(inorder_ack >= self.num_of_packets+1):
             self.done()
 
         if(ack):
@@ -251,13 +249,13 @@ class SR:
 
             condition = ack in range(self.send_base, min(self.send_base + self.window_size + 1, self.num_of_packets))
             if(condition):
-                print("Received ACK: ", self.get_next_seq_num(ack))
+                print("Received ACK: ", self.get_next_sequence_number(ack))
                 self.inorder_ack = ack
                 self.update_queue_ack(ack)
                 self.slide_window()
                 self.process_queue()
 
-        elif(inorder_ack > self.num_of_packets): #check if transmission is done
+        elif(inorder_ack > self.num_of_packets):
             self.done()
         
         else:
@@ -274,15 +272,15 @@ class SR:
             self.terminated = True
             exit()
 
-    def send_packet(self, seq_num):
-        print("Sending ", self.get_next_seq_num(seq_num), "; Timer started")
-        if(not self.queue[seq_num]['data']): self.queue[seq_num]['data'] = Util.randomString(self.segment_size)
-        checksum = Checksum.compute(self.queue[seq_num]['data'])
-        if(seq_num in self.check_packets):
-            checksum = "avalakipavalaki"
-            self.check_packets.pop(self.check_packets.index(seq_num))
-            print("Simulating wrong checksum for packet: ", seq_num)
-        packet = Packet(self.queue[seq_num]['data'], checksum, seq_num, False)
+    def send_packet(self, sequence_number):
+        print("Sent Packet #-> ", self.get_next_sequence_number(sequence_number))
+        if(not self.queue[sequence_number]['data']): self.queue[sequence_number]['data'] = Randomize_utility.randomString(self.segment_size)
+        checksum = Checksum.compute(self.queue[sequence_number]['data'])
+        if(sequence_number in self.check_packets):
+            checksum = "myrandomchecksum"
+            self.check_packets.pop(self.check_packets.index(sequence_number))
+            print("Simulating wrong checksum for packet: ", sequence_number)
+        packet = Packet(self.queue[sequence_number]['data'], checksum, sequence_number, False)
         self.udp_helper.send(packet.getSerializedPacket(), self)
 
 class UDP:
